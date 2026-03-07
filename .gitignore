@@ -1,0 +1,41 @@
+# OS metadata
+.DS_Store
+
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+.ipynb_checkpoints/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Packaging / build artifacts
+build/
+dist/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+
+# Test / coverage outputs
+.coverage
+.coverage.*
+htmlcov/
+
+# Editor settings
+.idea/
+.vscode/
+
+# Local environment files
+.env
+.env.*
+
+# Generated captures and visualizations
+outputs/
