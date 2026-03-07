@@ -50,10 +50,7 @@ except ImportError:
     print("ERROR: mujoco package not found. Install with: pip install mujoco")
     sys.exit(1)
 
-# Ensure repo root is on path so we can import ik_solver / frame_transform
-sys.path.insert(0, str(_REPO_ROOT))
-
-from ik_solver import IK_SO101
+from cube_vision.planning.ik_so101 import IK_SO101
 
 _MJCF_PATH = _REPO_ROOT / "model" / "xlerobot.xml"
 
@@ -227,7 +224,7 @@ def run_visualization(
     # Optionally run the frame_transform pipeline with a synthetic point
     # ------------------------------------------------------------------
     if use_transform:
-        from frame_transform.frame_transform import camera_xyz_to_base_xyz
+        from cube_vision.transforms.camera_to_base import camera_xyz_to_base_xyz
 
         # Synthesize a camera-frame point that roughly maps to our target.
         # Use head at neutral (pan=0, tilt=0 in motor convention = pan≈1°, tilt≈14° motor).
