@@ -61,7 +61,7 @@ def main() -> None:
 
         pin.forwardKinematics(arm_model, arm_data, q)
         pin.updateFramePlacements(arm_model, arm_data)
-        ee_frame_id = arm_model.getFrameId("Fixed_Jaw")
+        ee_frame_id = arm_model.getFrameId("Gripper_Tip")
         base_frame_id = arm_model.getFrameId("Base")
         oMee = arm_data.oMf[ee_frame_id]
         oMbase = arm_data.oMf[base_frame_id]

@@ -57,8 +57,8 @@ _LEFT_JOINT_NAMES = ["Rotation_L", "Pitch_L", "Elbow_L", "Wrist_Pitch_L", "Wrist
 _RIGHT_JOINT_NAMES = ["Rotation_R", "Pitch_R", "Elbow_R", "Wrist_Pitch_R", "Wrist_Roll_R"]
 _LEFT_JAW = "Jaw_L"
 _RIGHT_JAW = "Jaw_R"
-_LEFT_EE_BODY = "Fixed_Jaw"
-_RIGHT_EE_BODY = "Fixed_Jaw_2"
+_LEFT_EE_BODY = "Gripper_Tip"
+_RIGHT_EE_BODY = "Gripper_Tip_2"
 
 # Jaw joint limits (from MJCF): open ~ -0.37, closed ~ 1.74
 _JAW_OPEN = -0.37
@@ -145,7 +145,7 @@ def _inject_scene(root: ET.Element) -> None:
             body, "geom",
             {
                 "name": "ee_marker_glow", "type": "sphere",
-                "size": "0.018",
+                "size": "0.008",
                 "rgba": "0 1 0.2 0.3",
                 "contype": "0", "conaffinity": "0", "group": "1",
             },
@@ -155,7 +155,7 @@ def _inject_scene(root: ET.Element) -> None:
             body, "geom",
             {
                 "name": "ee_marker_geom", "type": "sphere",
-                "size": "0.01",
+                "size": "0.005",
                 "rgba": "0 1 0.3 1",
                 "contype": "0", "conaffinity": "0", "group": "1",
             },
@@ -322,7 +322,7 @@ def _sample_reachable_target(
 
         arm = ik.choose_arm(target_base, target_base2)
         active_target = target_base if arm == "left" else target_base2
-        traj = ik.generate_ik_bimanual(active_target.tolist(), arm=arm)
+        traj = ik.generate_ik_bimanual(active_target.tolist(), arm=arm, seed_q_rad=np.zeros(5))
         if traj:
             return target_base, target_base2, arm, traj
     return None
@@ -382,7 +382,7 @@ def run_visualization(
                 target_base2 = ik._base2_R.T @ (target_world - ik._base2_t)
                 arm = ik.choose_arm(target_base, target_base2)
                 active_target = target_base if arm == "left" else target_base2
-                approach_traj = ik.generate_ik_bimanual(active_target.tolist(), arm=arm)
+                approach_traj = ik.generate_ik_bimanual(active_target.tolist(), arm=arm, seed_q_rad=np.zeros(5))
                 if not approach_traj:
                     print(f"  Loop {loop_count}: IK failed for fixed target, skipping.")
                     time.sleep(1.0)
@@ -433,49 +433,16 @@ def run_visualization(
                 break
 
             # ----------------------------------------------------------
-            # 3. Approach — move arm to cube
+            # 3. Approach cube
             # ----------------------------------------------------------
+            # Prepend current arm pose so interpolation starts from where the arm is
+            current_q = np.array([data.qpos[i] for i in arm_qpos])
+            approach_traj.insert(0, current_q)
             approach_smooth = _interpolate(approach_traj, min_steps=200)
             _animate_trajectory(viewer, model, data, approach_smooth, arm_qpos, speed, ik_solver=ik, arm=arm)
             if not viewer.is_running():
                 break
-
-            # ----------------------------------------------------------
-            # 4. Close gripper
-            # ----------------------------------------------------------
-            _animate_jaw(viewer, model, data, jaw_idx, _JAW_OPEN, _JAW_CLOSED, steps=60, speed=speed)
-            if not viewer.is_running():
-                break
-            _hold(viewer, model, data, 0.5)
-
-            # ----------------------------------------------------------
-            # 5. Lift — solve IK to a point above the cube
-            # ----------------------------------------------------------
-            lift_target = active_target.copy()
-            lift_target[2] += _LIFT_HEIGHT
-
-            # Re-init IK state from current pose
-            ik_fresh = IK_SO101()
-            lift_traj = ik_fresh.generate_ik_bimanual(lift_target.tolist(), arm=arm)
-            if lift_traj:
-                lift_smooth = _interpolate(lift_traj, min_steps=150)
-                _animate_trajectory(
-                    viewer, model, data, lift_smooth, arm_qpos, speed,
-                    ik_solver=ik_fresh, arm=arm, cube_track_body=ee_body,
-                )
-            else:
-                print("    Lift IK failed, skipping lift.")
-
-            if not viewer.is_running():
-                break
             _hold(viewer, model, data, 1.0)
-
-            # ----------------------------------------------------------
-            # 6. Open gripper — release cube
-            # ----------------------------------------------------------
-            _animate_jaw(viewer, model, data, jaw_idx, _JAW_CLOSED, _JAW_OPEN, steps=40, speed=speed)
-            if not viewer.is_running():
-                break
 
             # ----------------------------------------------------------
             # 7. Hold and reset

@@ -72,8 +72,8 @@ class IK_SO101:
 
         self._left_q_indices = np.array([self._joint_q_idx[j] for j in _LEFT_ARM_JOINTS])
         self._right_q_indices = np.array([self._joint_q_idx[j] for j in _RIGHT_ARM_JOINTS])
-        self.EE_LEFT = "Fixed_Jaw"
-        self.EE_RIGHT = "Fixed_Jaw_2"
+        self.EE_LEFT = "Gripper_Tip"
+        self.EE_RIGHT = "Gripper_Tip_2"
 
         q = pin.neutral(self.model)
         pin.forwardKinematics(self.model, self.data, q)

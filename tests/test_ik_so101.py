@@ -9,8 +9,8 @@ def test_ik_so101_init():
     ik = IK_SO101()
     assert ik.model is not None
     assert ik.data is not None
-    assert ik.EE_LEFT == "Fixed_Jaw"
-    assert ik.EE_RIGHT == "Fixed_Jaw_2"
+    assert ik.EE_LEFT == "Gripper_Tip"
+    assert ik.EE_RIGHT == "Gripper_Tip_2"
 
 
 def test_base_to_world_and_back():

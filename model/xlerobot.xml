@@ -191,6 +191,11 @@
                     <geom type="mesh" mesh="Moving_Jaw_part3" class="collision" friction="3 0.2 0.1" condim="6"/>
                   </body>
 
+                  <!-- Gripper tip (EE frame at edge of gripper) -->
+                  <body name="Gripper_Tip" pos="0 -0.075 0">
+                    <inertial pos="0 0 0" mass="0.0001" diaginertia="1e-9 1e-9 1e-9"/>
+                  </body>
+
                   <!-- Camera on first arm -->
                   <body name="Right_Arm_Camera" pos="0 -0.022 0.05" euler="1.5708 -1.5708 0">
                     <geom type="mesh" mesh="XLeRobot_camera1" pos="-0.015 -0.026 0" material="white" class="visual"/>
@@ -272,6 +277,11 @@
                     <geom type="mesh" mesh="Moving_Jaw_part1" class="collision" friction="3 0.2 0.1" condim="6"/>
                     <geom type="mesh" mesh="Moving_Jaw_part2" class="collision" friction="3 0.2 0.1" condim="6"/>
                     <geom type="mesh" mesh="Moving_Jaw_part3" class="collision" friction="3 0.2 0.1" condim="6"/>
+                  </body>
+
+                  <!-- Gripper tip (EE frame at edge of gripper) -->
+                  <body name="Gripper_Tip_2" pos="0 -0.075 0">
+                    <inertial pos="0 0 0" mass="0.0001" diaginertia="1e-9 1e-9 1e-9"/>
                   </body>
 
                   <!-- Camera on second arm -->
