@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """MuJoCo visualizer — simulates the full pick-by-color pipeline.
 
-Spawns a cube, picks the best arm, solves IK, approaches, grips,
-lifts, releases, and repeats. No physics — just kinematic animation.
+Spawns a cube, picks the best arm, solves IK, and approaches.
+No physics — just kinematic animation.
 
 Usage:
     python visualize_mujoco.py                     # random cube positions, auto arm selection
@@ -64,8 +64,9 @@ _RIGHT_EE_BODY = "Gripper_Tip_2"
 _JAW_OPEN = -0.37
 _JAW_CLOSED = 1.2  # don't fully max out
 
-# How high above the grasp point to lift (meters in base frame)
-_LIFT_HEIGHT = 0.10
+# Home pose: arms curled up, grippers horizontal [Rotation, Pitch, Elbow, Wrist_Pitch, Wrist_Roll] in radians
+_HOME_POSE_RAD = np.deg2rad([0.0, 180.0, 180.0, 0.0, 0.0])
+
 
 # Table surface height in MJCF world coords.
 # Arm bases are at ~z=0.79 in MJCF. Table just below lowest reachable z.
@@ -217,6 +218,26 @@ def _get_body_pos(model, data, body_name: str) -> np.ndarray:
     return data.xpos[body_id].copy()
 
 
+def _set_home_pose(
+    model,
+    data,
+    left_qpos: list[int],
+    right_qpos: list[int],
+    left_jaw_idx: int,
+    right_jaw_idx: int,
+) -> None:
+    for idx, val in zip(left_qpos, _HOME_POSE_RAD):
+        data.qpos[idx] = val
+    for idx, val in zip(right_qpos, _HOME_POSE_RAD):
+        data.qpos[idx] = val
+    data.qpos[left_jaw_idx] = _JAW_OPEN
+    data.qpos[right_jaw_idx] = _JAW_OPEN
+    data.qvel[:] = 0
+    if data.act.size:
+        data.act[:] = 0
+    mujoco.mj_forward(model, data)
+
+
 def _set_mocap_pos(model, data, body_name: str, world_xyz: np.ndarray):
     body_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, body_name)
     if body_id == -1:
@@ -322,7 +343,7 @@ def _sample_reachable_target(
 
         arm = ik.choose_arm(target_base, target_base2)
         active_target = target_base if arm == "left" else target_base2
-        traj = ik.generate_ik_bimanual(active_target.tolist(), arm=arm, seed_q_rad=np.zeros(5))
+        traj = ik.generate_ik_bimanual(active_target.tolist(), arm=arm, seed_q_rad=_HOME_POSE_RAD)
         if traj:
             return target_base, target_base2, arm, traj
     return None
@@ -349,13 +370,10 @@ def run_visualization(
     left_jaw_idx = _get_joint_qpos_indices(model, [_LEFT_JAW])[0]
     right_jaw_idx = _get_joint_qpos_indices(model, [_RIGHT_JAW])[0]
 
-    # Start with jaws open
-    data.qpos[left_jaw_idx] = _JAW_OPEN
-    data.qpos[right_jaw_idx] = _JAW_OPEN
-    mujoco.mj_forward(model, data)
+    _set_home_pose(model, data, left_qpos, right_qpos, left_jaw_idx, right_jaw_idx)
 
     print("Launching MuJoCo viewer... (close the window to exit)")
-    print("Pipeline: place cube -> choose arm -> approach -> grip -> lift -> release -> reset")
+    print("Pipeline: place cube -> choose arm -> approach -> reset")
 
     with mujoco.viewer.launch_passive(model, data) as viewer:
         viewer.opt.label = mujoco.mjtLabel.mjLABEL_BODY
@@ -365,12 +383,8 @@ def run_visualization(
         while viewer.is_running():
             loop_count += 1
 
-            # --- Reset both arms and jaws to neutral ---
-            for idx in left_qpos + right_qpos:
-                data.qpos[idx] = 0.0
-            data.qpos[left_jaw_idx] = _JAW_OPEN
-            data.qpos[right_jaw_idx] = _JAW_OPEN
-            mujoco.mj_forward(model, data)
+            # --- Reset both arms to home pose, jaws open ---
+            _set_home_pose(model, data, left_qpos, right_qpos, left_jaw_idx, right_jaw_idx)
             _update_ee_marker(model, data, _LEFT_EE_BODY)
             viewer.sync()
 
@@ -383,7 +397,7 @@ def run_visualization(
                 target_base2 = ik._base2_R.T @ (target_world - ik._base2_t)
                 arm = ik.choose_arm(target_base, target_base2)
                 active_target = target_base if arm == "left" else target_base2
-                approach_traj = ik.generate_ik_bimanual(active_target.tolist(), arm=arm, seed_q_rad=np.zeros(5))
+                approach_traj = ik.generate_ik_bimanual(active_target.tolist(), arm=arm, seed_q_rad=_HOME_POSE_RAD)
                 if not approach_traj:
                     print(f"  Loop {loop_count}: IK failed for fixed target, skipping.")
                     time.sleep(1.0)
