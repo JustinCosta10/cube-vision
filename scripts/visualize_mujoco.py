@@ -303,19 +303,21 @@ def _table_z_in_base_frame(ik: IK_SO101) -> float:
 def _sample_reachable_target(
     ik: IK_SO101, rng: np.random.Generator, max_attempts: int = 100,
 ) -> tuple[np.ndarray, np.ndarray, str, list[np.ndarray]] | None:
-    """Sample a random target on the table, choose the best arm, return (base_target, base2_target, arm, trajectory)."""
-    x_bounds = (-0.08, 0.08)
-    y_bounds = (-0.28, -0.14)
-    table_z = _table_z_in_base_frame(ik)
+    """Sample a random target on the table in world coords, choose the best arm, return (base_target, base2_target, arm, trajectory)."""
+    # Sample in world frame so targets span both arms' workspaces.
+    # Table center is at _TABLE_POS; arms are at world y ≈ -0.11 (left) and +0.11 (right).
+    world_x_bounds = (-0.38, -0.22)   # in front of robot (negative world X)
+    world_y_bounds = (-0.14, 0.14)    # spans both arms
+    world_z = _TABLE_Z + _CUBE_HALF   # cube on table surface
 
     for _ in range(max_attempts):
-        target_base = np.array([
-            rng.uniform(*x_bounds),
-            rng.uniform(*y_bounds),
-            table_z,
+        target_world = np.array([
+            rng.uniform(*world_x_bounds),
+            rng.uniform(*world_y_bounds),
+            world_z,
         ])
-        # Convert to right-arm base frame
-        target_world = ik.base_to_world(target_base)
+        # Convert to both arm base frames
+        target_base = ik._base_R.T @ (target_world - ik._base_t)
         target_base2 = ik._base2_R.T @ (target_world - ik._base2_t)
 
         arm = ik.choose_arm(target_base, target_base2)
