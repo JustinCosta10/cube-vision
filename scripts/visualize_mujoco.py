@@ -307,6 +307,15 @@ def _interpolate(
     return [interp[i] for i in range(min_steps)]
 
 
+def _stabilize(model, data):
+    """Zero velocities/accelerations and run forward kinematics for a jitter-free frame."""
+    data.qvel[:] = 0
+    data.qacc[:] = 0
+    if data.act.size:
+        data.act[:] = 0
+    mujoco.mj_forward(model, data)
+
+
 def _animate_trajectory(
     viewer,
     model,
@@ -325,7 +334,7 @@ def _animate_trajectory(
             return
         for idx, q_val in zip(qpos_indices, q_step):
             data.qpos[idx] = q_val
-        mujoco.mj_forward(model, data)
+        _stabilize(model, data)
         if ik_solver and arm:
             ee_world = ik_solver.ee_world_pos(q_step, arm=arm)
             _set_mocap_pos(model, data, "ee_marker", ee_world)
@@ -342,16 +351,17 @@ def _animate_jaw(viewer, model, data, jaw_idx, start, end, steps, speed):
         if not viewer.is_running():
             return
         data.qpos[jaw_idx] = val
-        mujoco.mj_forward(model, data)
+        _stabilize(model, data)
         viewer.sync()
         time.sleep(dt)
 
 
 def _hold(viewer, model, data, seconds):
     """Hold current pose for a duration."""
+    _stabilize(model, data)
+    viewer.sync()
     t0 = time.time()
     while viewer.is_running() and time.time() - t0 < seconds:
-        mujoco.mj_forward(model, data)
         viewer.sync()
         time.sleep(0.05)
 
@@ -466,7 +476,7 @@ def run_visualization(
             # Show cube in viewer
             cube_world = ik.base_to_world(target_base)
             _set_cube_pos(model, data, cube_world)
-            mujoco.mj_forward(model, data)
+            _stabilize(model, data)
             viewer.sync()
 
             if arm == "left":
