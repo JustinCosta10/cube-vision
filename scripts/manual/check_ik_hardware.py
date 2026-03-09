@@ -4,10 +4,8 @@ import time
 
 import numpy as np
 
-from cube_vision.config.robot import LEFT_ARM_JOINT_KEYS, RIGHT_ARM_JOINT_KEYS
-from cube_vision.hardware.motors import apply_default_arm_profile, connect_arm_bus
-from cube_vision.planning.ik_so101 import IK_SO101
-from cube_vision.planning.joint_mapping import traj_to_goals
+from cube_vision.hardware import LEFT_ARM_JOINT_KEYS, RIGHT_ARM_JOINT_KEYS, apply_default_arm_profile, connect_arm_bus
+from cube_vision.ik import IK_SO101, traj_to_goals
 
 TARGET_BASE = [0.0, -0.20, 0.00]
 ARM = "auto"

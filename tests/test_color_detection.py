@@ -1,6 +1,6 @@
 import numpy as np
 
-from cube_vision.perception.color import detect_color
+from cube_vision.vision import detect_color
 
 
 def test_detect_color_finds_largest_blob():

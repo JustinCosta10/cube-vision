@@ -4,7 +4,7 @@
 import numpy as np
 import pinocchio as pin
 
-from cube_vision.config.paths import MJCF_PATH
+from cube_vision import MJCF_PATH
 
 np.set_printoptions(precision=4, suppress=True)
 

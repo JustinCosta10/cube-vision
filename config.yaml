@@ -1,0 +1,57 @@
+# ============================================================================
+# Cube Vision — robot configuration
+#
+# Edit this file to match your hardware setup. Every motor ID, bus port,
+# and tuning parameter used by the pipeline is defined here.
+# ============================================================================
+
+model:
+  mjcf: model/xlerobot.xml          # path relative to repo root
+
+# --- Serial buses -----------------------------------------------------------
+buses:
+  arm:
+    port: /dev/ttyACM0
+  head:
+    port: /dev/ttyACM1
+
+# --- Motor definitions ------------------------------------------------------
+# Each motor needs: id (bus ID), model (servo model), mode (degrees | range_0_100)
+motors:
+  arm:
+    shoulder_pan_2:  { id: 1,  model: sts3215, mode: degrees }
+    shoulder_lift_2: { id: 2,  model: sts3215, mode: degrees }
+    elbow_flex_2:    { id: 3,  model: sts3215, mode: degrees }
+    wrist_flex_2:    { id: 4,  model: sts3215, mode: degrees }
+    wrist_roll_2:    { id: 5,  model: sts3215, mode: degrees }
+    gripper_2:       { id: 6,  model: sts3215, mode: range_0_100 }
+    shoulder_pan:    { id: 7,  model: sts3215, mode: degrees }
+    shoulder_lift:   { id: 8,  model: sts3215, mode: degrees }
+    elbow_flex:      { id: 9,  model: sts3215, mode: degrees }
+    wrist_flex:      { id: 10, model: sts3215, mode: degrees }
+    wrist_roll:      { id: 11, model: sts3215, mode: degrees }
+    gripper:         { id: 12, model: sts3215, mode: range_0_100 }
+  head:
+    head_pan:  { id: 2, model: sts3215, mode: degrees }
+    head_tilt: { id: 1, model: sts3215, mode: degrees }
+
+# --- Position control profile -----------------------------------------------
+control:
+  torque_limit: 500        # out of 1000
+  acceleration: 10         # out of 254
+  pid: { p: 8, i: 0, d: 32 }
+
+# --- Camera ------------------------------------------------------------------
+camera:
+  width: 640
+  height: 480
+  fps: 30
+
+# --- Detection ---------------------------------------------------------------
+detection:
+  default_color: red
+  exclude_bottom_fraction: 0.10
+
+# --- IK tuning ---------------------------------------------------------------
+ik:
+  target_offset: [0.0, 0.0, 0.0]   # XYZ offset applied to vision target (meters)

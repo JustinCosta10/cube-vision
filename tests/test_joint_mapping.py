@@ -1,6 +1,6 @@
 import numpy as np
 
-from cube_vision.planning.joint_mapping import mjcf_to_motor, traj_to_goals
+from cube_vision.ik import mjcf_to_motor, traj_to_goals
 
 
 def test_mjcf_to_motor_maps_expected_axes():

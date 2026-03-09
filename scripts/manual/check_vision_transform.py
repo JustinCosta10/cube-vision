@@ -6,11 +6,10 @@ from pathlib import Path
 import numpy as np
 from lerobot.motors.feetech import FeetechMotorsBus
 
-from cube_vision.config.robot import DEG2RAD, HEAD_MOTOR_DEFS, HEAD_BUS_PORT
-from cube_vision.hardware.calibration import load_or_run_calibration
-from cube_vision.hardware.realsense import capture
-from cube_vision.perception.color import detect_object
-from cube_vision.transforms.camera_to_base import camera_xyz_to_base_xyz
+from cube_vision import DEG2RAD
+from cube_vision.hardware import HEAD_BUS_PORT, HEAD_MOTOR_DEFS, capture, load_or_run_calibration
+from cube_vision.vision import detect_object
+from cube_vision.transforms import camera_xyz_to_base_xyz
 
 OUTPUT_DIR = Path(__file__).resolve().parents[2] / "outputs"
 

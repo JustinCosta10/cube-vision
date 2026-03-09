@@ -1,39 +1,40 @@
 #!/usr/bin/env python3
 """Diagnostic: compare FK end-effector position against vision result."""
 
-from pathlib import Path
-
 import numpy as np
 import pinocchio as pin
-from lerobot.motors.feetech import FeetechMotorsBus
 
-from cube_vision.config.paths import MJCF_PATH
-from cube_vision.config.robot import DEG2RAD, LEGACY_BUS_PORT, LEGACY_MOTOR_DEFS
-from cube_vision.hardware.calibration import load_or_run_calibration
-from cube_vision.hardware.realsense import capture
-from cube_vision.perception.color import detect_object
-from cube_vision.transforms.camera_to_base import _head_motor_to_mjcf, camera_xyz_to_base_xyz
+from cube_vision import DEG2RAD, MJCF_PATH
+from cube_vision.hardware import (
+    capture,
+    connect_arm_bus,
+    connect_head_bus,
+    load_or_run_calibration,
+    read_head_positions_deg,
+)
+from cube_vision.vision import detect_object
+from cube_vision.transforms import _head_motor_to_mjcf, camera_xyz_to_base_xyz
 
 
 def motor_to_mjcf(q_deg):
+    """Inverse of mjcf_to_motor: motor degrees -> MJCF degrees."""
     out = q_deg.copy()
+    out[0] = -out[0]
     out[1] = 90.0 - out[1]
     out[2] = out[2] + 90.0
     return out
 
 
 def main() -> None:
-    bus = FeetechMotorsBus(port=LEGACY_BUS_PORT, motors=LEGACY_MOTOR_DEFS)
-    bus.connect()
+    arm_bus = connect_arm_bus()
+    head_bus = connect_head_bus()
     try:
-        load_or_run_calibration(bus)
-        all_motors = list(bus.motors.keys())
-        bus.disable_torque(all_motors)
+        all_arm_motors = list(arm_bus.motors.keys())
+        arm_bus.disable_torque(all_arm_motors)
         input("\n>>> Place the gripper tip ON the cube, then press ENTER...")
 
-        positions = bus.sync_read("Present_Position", all_motors)
-        head_pan_deg = float(positions["head_pan"])
-        head_tilt_deg = float(positions["head_tilt"])
+        positions = arm_bus.sync_read("Present_Position", all_arm_motors)
+        head_pan_deg, head_tilt_deg = read_head_positions_deg(head_bus)
         arm_motor_deg = np.array(
             [
                 float(positions["shoulder_pan"]),
@@ -86,7 +87,8 @@ def main() -> None:
         print(f"VIS: {[vx, vy, vz]}")
         print(f"ERR: {err}, |err|={np.linalg.norm(err)*100:.1f} cm")
     finally:
-        bus.disconnect()
+        arm_bus.disconnect()
+        head_bus.disconnect()
 
 
 if __name__ == "__main__":
