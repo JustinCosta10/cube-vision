@@ -371,6 +371,7 @@ def run_visualization(
             data.qpos[left_jaw_idx] = _JAW_OPEN
             data.qpos[right_jaw_idx] = _JAW_OPEN
             mujoco.mj_forward(model, data)
+            _update_ee_marker(model, data, _LEFT_EE_BODY)
             viewer.sync()
 
             # ----------------------------------------------------------
@@ -428,10 +429,6 @@ def run_visualization(
             # ----------------------------------------------------------
             # 2. Pause to show the cube before moving
             # ----------------------------------------------------------
-            _hold(viewer, model, data, 1.0)
-            if not viewer.is_running():
-                break
-
             # ----------------------------------------------------------
             # 3. Approach cube
             # ----------------------------------------------------------
@@ -443,11 +440,6 @@ def run_visualization(
             if not viewer.is_running():
                 break
             _hold(viewer, model, data, 1.0)
-
-            # ----------------------------------------------------------
-            # 7. Hold and reset
-            # ----------------------------------------------------------
-            _hold(viewer, model, data, 2.0)
 
     print("Done.")
 
