@@ -1,14 +1,13 @@
 #!/usr/bin/env python3
-"""MuJoCo visualizer for the xlerobot IK pipeline.
+"""MuJoCo visualizer — simulates the full pick-by-color pipeline.
 
-Simulates the full control pipeline (frame_transform + IK solver) on an
-imaginary cube on a table, without requiring hardware.
+Spawns a cube, picks the best arm, solves IK, approaches, grips,
+lifts, releases, and repeats. No physics — just kinematic animation.
 
 Usage:
-    python visualize_mujoco.py                              # default cube 25cm from arm on table
+    python visualize_mujoco.py                     # random cube positions, auto arm selection
     python visualize_mujoco.py --cube-x 0.05 --cube-y -0.25 --cube-z 0.02
-    python visualize_mujoco.py --use-transform              # run frame_transform pipeline
-    python visualize_mujoco.py --speed 0.5                  # slower playback
+    python visualize_mujoco.py --speed 2.0         # faster playback
 """
 
 import argparse
@@ -26,14 +25,13 @@ _SCRIPT_DIR = Path(__file__).resolve().parent
 _REPO_ROOT = _SCRIPT_DIR.parent
 
 # ---------------------------------------------------------------------------
-# On macOS, MuJoCo's launch_passive requires the script to run under mjpython.
-# Auto-relaunch if we detect we're on macOS and not already under mjpython.
+# On macOS, MuJoCo's launch_passive requires mjpython. Auto-relaunch.
 # ---------------------------------------------------------------------------
 if platform.system() == "Darwin" and "MJPYTHON" not in os.environ:
     mjpython = shutil.which("mjpython")
     if mjpython:
         env = os.environ.copy()
-        env["MJPYTHON"] = "1"  # prevent infinite re-launch
+        env["MJPYTHON"] = "1"
         result = subprocess.run([mjpython] + sys.argv, env=env)
         sys.exit(result.returncode)
     else:
@@ -51,73 +49,133 @@ except ImportError:
     sys.exit(1)
 
 from cube_vision.ik import IK_SO101
+from cube_vision.transforms import camera_xyz_to_base_xyz, camera_xyz_to_base2_xyz
 
 _MJCF_PATH = _REPO_ROOT / "model" / "xlerobot.xml"
 
-# Offset converts IK world positions (URDF) to MJCF world positions.
-# URDF Base X=-0.135, MJCF Base X=-0.09; URDF Base Y=-0.088, MJCF Base Y=-0.11
-_MJCF_OFFSET = np.array([0.045, -0.022, 0.015])
+_LEFT_JOINT_NAMES = ["Rotation_L", "Pitch_L", "Elbow_L", "Wrist_Pitch_L", "Wrist_Roll_L"]
+_RIGHT_JOINT_NAMES = ["Rotation_R", "Pitch_R", "Elbow_R", "Wrist_Pitch_R", "Wrist_Roll_R"]
+_LEFT_JAW = "Jaw_L"
+_RIGHT_JAW = "Jaw_R"
+_LEFT_EE_BODY = "Fixed_Jaw"
+_RIGHT_EE_BODY = "Fixed_Jaw_2"
 
-# The 5 IK joints in the order returned by generate_ik()
-_IK_JOINT_NAMES = [
-    "Rotation_L",
-    "Pitch_L",
-    "Elbow_L",
-    "Wrist_Pitch_L",
-    "Wrist_Roll_L",
-]
+# Jaw joint limits (from MJCF): open ~ -0.37, closed ~ 1.74
+_JAW_OPEN = -0.37
+_JAW_CLOSED = 1.2  # don't fully max out
 
-def _ensure_target_cube_body(root: ET.Element) -> None:
-    """Ensure the MJCF contains a visible mocap cube body named target_cube."""
+# How high above the grasp point to lift (meters in base frame)
+_LIFT_HEIGHT = 0.10
+
+# Table surface height in MJCF world coords.
+# Arm bases are at ~z=0.79 in MJCF. Table just below lowest reachable z.
+_TABLE_Z = 0.69
+_TABLE_HALF_SIZE = (0.25, 0.30, 0.02)  # x, y, z half-extents
+# Table center in MJCF world: in front of the robot (negative x)
+_TABLE_POS = (-0.30, 0.0, _TABLE_Z - _TABLE_HALF_SIZE[2])
+_CUBE_HALF = 0.017  # half-size of the cube geom
+
+
+# ---------------------------------------------------------------------------
+# MJCF helpers
+# ---------------------------------------------------------------------------
+
+
+def _inject_scene(root: ET.Element) -> None:
+    """Inject ground plane, table, and target cube into the MJCF worldbody."""
     worldbody = root.find("worldbody")
     if worldbody is None:
         worldbody = ET.SubElement(root, "worldbody")
 
-    for body in worldbody.findall("body"):
-        if body.get("name") == "target_cube":
-            return
+    existing = {b.get("name") for b in worldbody.findall("body")}
+    existing |= {g.get("name") for g in worldbody.findall("geom")}
 
-    body = ET.SubElement(
-        worldbody,
-        "body",
-        {"name": "target_cube", "mocap": "true", "pos": "0 0 0.15"},
-    )
-    ET.SubElement(
-        body,
-        "geom",
-        {
-            "name": "target_cube_geom",
-            "type": "box",
-            "size": "0.017 0.017 0.017",
-            "rgba": "1 0.1 0.1 1",
-            "contype": "0",
-            "conaffinity": "0",
-            "group": "1",
-        },
-    )
+    # Ground plane
+    if "ground" not in existing:
+        ET.SubElement(
+            worldbody, "geom",
+            {
+                "name": "ground", "type": "plane",
+                "size": "2 2 0.01", "pos": "0 0 0",
+                "rgba": "0.85 0.85 0.80 1",
+                "contype": "0", "conaffinity": "0",
+            },
+        )
+
+    # Table
+    if "table" not in existing:
+        tx, ty, tz = _TABLE_POS
+        sx, sy, sz = _TABLE_HALF_SIZE
+        ET.SubElement(
+            worldbody, "geom",
+            {
+                "name": "table", "type": "box",
+                "size": f"{sx} {sy} {sz}",
+                "pos": f"{tx} {ty} {tz}",
+                "rgba": "0.45 0.30 0.18 1",
+                "contype": "0", "conaffinity": "0",
+            },
+        )
+
+    # Target cube (mocap so we can move it freely)
+    if "target_cube" not in existing:
+        cube_start_z = _TABLE_Z + _CUBE_HALF
+        body = ET.SubElement(
+            worldbody, "body",
+            {"name": "target_cube", "mocap": "true", "pos": f"0 0 {cube_start_z}"},
+        )
+        ET.SubElement(
+            body, "geom",
+            {
+                "name": "target_cube_geom", "type": "box",
+                "size": f"{_CUBE_HALF} {_CUBE_HALF} {_CUBE_HALF}",
+                "rgba": "1 0.1 0.1 1",
+                "contype": "0", "conaffinity": "0", "group": "1",
+            },
+        )
+
+    # End-effector marker — bright sphere showing Pinocchio FK position
+    if "ee_marker" not in existing:
+        body = ET.SubElement(
+            worldbody, "body",
+            {"name": "ee_marker", "mocap": "true", "pos": "0 0 0"},
+        )
+        # Outer glow
+        ET.SubElement(
+            body, "geom",
+            {
+                "name": "ee_marker_glow", "type": "sphere",
+                "size": "0.018",
+                "rgba": "0 1 0.2 0.3",
+                "contype": "0", "conaffinity": "0", "group": "1",
+            },
+        )
+        # Inner core
+        ET.SubElement(
+            body, "geom",
+            {
+                "name": "ee_marker_geom", "type": "sphere",
+                "size": "0.01",
+                "rgba": "0 1 0.3 1",
+                "contype": "0", "conaffinity": "0", "group": "1",
+            },
+        )
 
 
 def _resolved_meshdir(root: ET.Element) -> str:
-    """Return an absolute meshdir for robust temporary-XML loading."""
     compiler = root.find("compiler")
-    if compiler is None:
+    if compiler is None or not compiler.get("meshdir"):
         return str((_MJCF_PATH.parent / "stl").resolve())
-
-    meshdir = compiler.get("meshdir")
-    if not meshdir:
-        return str((_MJCF_PATH.parent / "stl").resolve())
-
-    meshdir_path = Path(meshdir)
+    meshdir_path = Path(compiler.get("meshdir"))
     if not meshdir_path.is_absolute():
         meshdir_path = (_MJCF_PATH.parent / meshdir_path).resolve()
     return str(meshdir_path)
 
 
-def _load_mj_model_with_mesh_fallback() -> "mujoco.MjModel":
-    """Load MJCF, falling back to repo-local model/stl if meshdir is broken."""
+def _load_mj_model() -> "mujoco.MjModel":
     tree = ET.parse(_MJCF_PATH)
     root = tree.getroot()
-    _ensure_target_cube_body(root)
+    _inject_scene(root)
     compiler = root.find("compiler")
     if compiler is None:
         compiler = ET.SubElement(root, "compiler")
@@ -125,32 +183,28 @@ def _load_mj_model_with_mesh_fallback() -> "mujoco.MjModel":
 
     with tempfile.NamedTemporaryFile("wb", suffix=".xml", delete=False) as tmp:
         tree.write(tmp, encoding="utf-8")
-        tmp_xml_path = Path(tmp.name)
-
+        tmp_path = Path(tmp.name)
     try:
-        return mujoco.MjModel.from_xml_path(str(tmp_xml_path))
-    except ValueError as exc:
+        return mujoco.MjModel.from_xml_path(str(tmp_path))
+    except ValueError:
         model_stl_dir = _REPO_ROOT / "model" / "stl"
         if not model_stl_dir.is_dir():
             raise
-        print(f"MJCF load failed: {exc}")
-        print(f"Retrying with meshdir={model_stl_dir}")
         compiler.set("meshdir", str(model_stl_dir))
         with tempfile.NamedTemporaryFile("wb", suffix=".xml", delete=False) as tmp2:
             tree.write(tmp2, encoding="utf-8")
-            tmp_xml_path_2 = Path(tmp2.name)
+            tmp_path_2 = Path(tmp2.name)
         try:
-            return mujoco.MjModel.from_xml_path(str(tmp_xml_path_2))
+            return mujoco.MjModel.from_xml_path(str(tmp_path_2))
         finally:
-            tmp_xml_path_2.unlink(missing_ok=True)
+            tmp_path_2.unlink(missing_ok=True)
     finally:
-        tmp_xml_path.unlink(missing_ok=True)
+        tmp_path.unlink(missing_ok=True)
 
 
-def _resolve_joint_qpos_indices(model: "mujoco.MjModel") -> list[int]:
-    """Map each IK joint name to its qpos index in the MuJoCo model."""
+def _get_joint_qpos_indices(model, joint_names: list[str]) -> list[int]:
     indices = []
-    for name in _IK_JOINT_NAMES:
+    for name in joint_names:
         jnt_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, name)
         if jnt_id == -1:
             raise RuntimeError(f"Joint '{name}' not found in MJCF model")
@@ -158,217 +212,292 @@ def _resolve_joint_qpos_indices(model: "mujoco.MjModel") -> list[int]:
     return indices
 
 
-def _update_target_cube(model, data, world_xyz: np.ndarray):
-    """Move the mocap target cube to the given world-frame position."""
-    body_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "target_cube")
+def _get_body_pos(model, data, body_name: str) -> np.ndarray:
+    body_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, body_name)
+    return data.xpos[body_id].copy()
+
+
+def _set_mocap_pos(model, data, body_name: str, world_xyz: np.ndarray):
+    body_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, body_name)
     if body_id == -1:
         return
-    # mocap bodies have their own index
     mocap_id = model.body_mocapid[body_id]
     if mocap_id >= 0:
         data.mocap_pos[mocap_id] = world_xyz
 
 
-def _interpolate_trajectory(trajectory: list[np.ndarray], min_anim_steps: int = 200) -> list[np.ndarray]:
-    """Upsample short IK trajectories so motion is visibly smooth."""
-    if len(trajectory) >= min_anim_steps or len(trajectory) < 2:
+def _set_cube_pos(model, data, world_xyz: np.ndarray):
+    _set_mocap_pos(model, data, "target_cube", world_xyz)
+
+
+def _update_ee_marker(model, data, ee_body: str):
+    _set_mocap_pos(model, data, "ee_marker", _get_body_pos(model, data, ee_body))
+
+
+# ---------------------------------------------------------------------------
+# Animation helpers
+# ---------------------------------------------------------------------------
+
+
+def _interpolate(trajectory: list[np.ndarray], min_steps: int = 200) -> list[np.ndarray]:
+    if len(trajectory) >= min_steps or len(trajectory) < 2:
         return trajectory
     orig = np.array(trajectory)
     t_orig = np.linspace(0, 1, len(orig))
-    t_new = np.linspace(0, 1, min_anim_steps)
-    interp = np.zeros((min_anim_steps, orig.shape[1]))
+    t_new = np.linspace(0, 1, min_steps)
+    interp = np.zeros((min_steps, orig.shape[1]))
     for j in range(orig.shape[1]):
         interp[:, j] = np.interp(t_new, t_orig, orig[:, j])
-    return [interp[i] for i in range(min_anim_steps)]
+    return [interp[i] for i in range(min_steps)]
 
 
-def _sample_random_reachable_target(
-    ik: IK_SO101,
-    gripper_offset: list[float],
-    rng: np.random.Generator,
-    max_attempts: int = 100,
-) -> tuple[np.ndarray, list[np.ndarray]] | None:
-    """Sample a random base-frame cube location and keep only IK-reachable targets."""
-    # Conservative reachable workspace in base frame (meters).
-    x_bounds = (-0.12, 0.12)
-    y_bounds = (-0.34, -0.14)  # forward is negative Y in this project
-    z_bounds = (-0.02, 0.16)
+def _animate_trajectory(
+    viewer, model, data, trajectory, qpos_indices, speed,
+    ik_solver=None, arm=None, cube_track_body=None,
+):
+    """Animate joint trajectory. Tracks EE via Pinocchio FK and optionally moves cube with gripper."""
+    dt = max(3.0 / len(trajectory), 0.01) / speed
+    for q_step in trajectory:
+        if not viewer.is_running():
+            return
+        for idx, q_val in zip(qpos_indices, q_step):
+            data.qpos[idx] = q_val
+        mujoco.mj_forward(model, data)
+        if ik_solver and arm:
+            ee_world = ik_solver.ee_world_pos(q_step, arm=arm)
+            _set_mocap_pos(model, data, "ee_marker", ee_world)
+        if cube_track_body:
+            _set_cube_pos(model, data, _get_body_pos(model, data, cube_track_body))
+        viewer.sync()
+        time.sleep(dt)
+
+
+def _animate_jaw(viewer, model, data, jaw_idx, start, end, steps, speed):
+    """Smoothly animate a jaw joint from start to end angle."""
+    dt = max(1.0 / steps, 0.005) / speed
+    for val in np.linspace(start, end, steps):
+        if not viewer.is_running():
+            return
+        data.qpos[jaw_idx] = val
+        mujoco.mj_forward(model, data)
+        viewer.sync()
+        time.sleep(dt)
+
+
+def _hold(viewer, model, data, seconds):
+    """Hold current pose for a duration."""
+    t0 = time.time()
+    while viewer.is_running() and time.time() - t0 < seconds:
+        mujoco.mj_forward(model, data)
+        viewer.sync()
+        time.sleep(0.05)
+
+
+def _table_z_in_base_frame(ik: IK_SO101) -> float:
+    """Z value in the left-arm base frame that places the cube on the table surface."""
+    # Table top in world is at _TABLE_Z. Cube center sits at _TABLE_Z + _CUBE_HALF.
+    cube_world_z = _TABLE_Z + _CUBE_HALF
+    return cube_world_z - ik._base_t[2]
+
+
+def _sample_reachable_target(
+    ik: IK_SO101, rng: np.random.Generator, max_attempts: int = 100,
+) -> tuple[np.ndarray, np.ndarray, str, list[np.ndarray]] | None:
+    """Sample a random target on the table, choose the best arm, return (base_target, base2_target, arm, trajectory)."""
+    x_bounds = (-0.08, 0.08)
+    y_bounds = (-0.28, -0.14)
+    table_z = _table_z_in_base_frame(ik)
 
     for _ in range(max_attempts):
-        target = np.array(
-            [
-                rng.uniform(*x_bounds),
-                rng.uniform(*y_bounds),
-                rng.uniform(*z_bounds),
-            ],
-            dtype=float,
-        )
-        trajectory = ik.generate_ik(
-            target_xyz=target.tolist(),
-            gripper_offset_xyz=gripper_offset,
-        )
-        if trajectory:
-            return target, trajectory
+        target_base = np.array([
+            rng.uniform(*x_bounds),
+            rng.uniform(*y_bounds),
+            table_z,
+        ])
+        # Convert to right-arm base frame
+        target_world = ik.base_to_world(target_base)
+        target_base2 = ik._base2_R.T @ (target_world - ik._base2_t)
+
+        arm = ik.choose_arm(target_base, target_base2)
+        active_target = target_base if arm == "left" else target_base2
+        traj = ik.generate_ik_bimanual(active_target.tolist(), arm=arm)
+        if traj:
+            return target_base, target_base2, arm, traj
     return None
 
 
+# ---------------------------------------------------------------------------
+# Main visualization loop
+# ---------------------------------------------------------------------------
+
+
 def run_visualization(
-    cube_base: list[float],
-    gripper_offset: list[float],
-    use_transform: bool = False,
+    cube_base: list[float] | None = None,
     speed: float = 1.0,
 ):
-    """Run the full IK pipeline and animate in MuJoCo viewer."""
-
-    # ------------------------------------------------------------------
-    # Optionally run the frame_transform pipeline with a synthetic point
-    # ------------------------------------------------------------------
-    if use_transform:
-        from cube_vision.transforms import camera_xyz_to_base_xyz
-
-        # Synthesize a camera-frame point that roughly maps to our target.
-        # Use head at neutral (pan=0, tilt=0 in motor convention = pan≈1°, tilt≈14° motor).
-        # We just pass 0,0 in radians as a simple demo.
-        joint_values = {"head_pan_joint": 0.0, "head_tilt_joint": 0.0}
-
-        # A point 30cm forward, slightly down in camera optical frame
-        cam_x, cam_y, cam_z = 0.0, 0.05, 0.30
-        bx, by, bz = camera_xyz_to_base_xyz(cam_x, cam_y, cam_z, joint_values)
-        cube_base = [bx, by, bz]
-        print(f"[frame_transform] Camera ({cam_x}, {cam_y}, {cam_z}) "
-              f"-> Base ({bx:.4f}, {by:.4f}, {bz:.4f})")
-
-    # ------------------------------------------------------------------
-    # Set up IK solver
-    # ------------------------------------------------------------------
     ik = IK_SO101()
     rng = np.random.default_rng()
 
-    # ------------------------------------------------------------------
-    # Load MuJoCo model
-    # ------------------------------------------------------------------
     print(f"Loading MJCF model from {_MJCF_PATH} ...")
-    model = _load_mj_model_with_mesh_fallback()
+    model = _load_mj_model()
     data = mujoco.MjData(model)
 
-    qpos_indices = _resolve_joint_qpos_indices(model)
+    left_qpos = _get_joint_qpos_indices(model, _LEFT_JOINT_NAMES)
+    right_qpos = _get_joint_qpos_indices(model, _RIGHT_JOINT_NAMES)
+    left_jaw_idx = _get_joint_qpos_indices(model, [_LEFT_JAW])[0]
+    right_jaw_idx = _get_joint_qpos_indices(model, [_RIGHT_JAW])[0]
 
-    # Set initial pose and forward
+    # Start with jaws open
+    data.qpos[left_jaw_idx] = _JAW_OPEN
+    data.qpos[right_jaw_idx] = _JAW_OPEN
     mujoco.mj_forward(model, data)
 
-    # ------------------------------------------------------------------
-    # Animate in passive viewer
-    # ------------------------------------------------------------------
     print("Launching MuJoCo viewer... (close the window to exit)")
-    print("  Label toggle keys in viewer:  i = body/link  j = joint  u = off")
+    print("Pipeline: place cube -> choose arm -> approach -> grip -> lift -> release -> reset")
 
     with mujoco.viewer.launch_passive(model, data) as viewer:
-        # -- Enable labels & frames for joints and links -----------------
-        # mjtLabel: 0=none, 1=body, 2=joint, 3=geom, 4=site …
-        # mjtFrame: 0=none, 1=body, 2=geom, 3=site, 4=world, 6=joint
-        viewer.opt.label = mujoco.mjtLabel.mjLABEL_BODY   # show body/link names
-        viewer.opt.frame = mujoco.mjtFrame.mjFRAME_BODY    # show body coord frames
-
-        # Give the viewer a moment to initialize
+        viewer.opt.label = mujoco.mjtLabel.mjLABEL_BODY
         time.sleep(0.5)
 
-        # Loop: animate trajectory, hold 8s, reset, repeat
         loop_count = 0
         while viewer.is_running():
             loop_count += 1
-            print(f"Animation loop {loop_count}...")
 
-            if use_transform:
-                loop_cube_base = np.asarray(cube_base, dtype=float)
-                trajectory = ik.generate_ik(
-                    target_xyz=loop_cube_base.tolist(),
-                    gripper_offset_xyz=gripper_offset,
-                )
-                if not trajectory:
-                    print("WARNING: Fixed target became unreachable; skipping this loop.")
+            # --- Reset both arms and jaws to neutral ---
+            for idx in left_qpos + right_qpos:
+                data.qpos[idx] = 0.0
+            data.qpos[left_jaw_idx] = _JAW_OPEN
+            data.qpos[right_jaw_idx] = _JAW_OPEN
+            mujoco.mj_forward(model, data)
+            viewer.sync()
+
+            # ----------------------------------------------------------
+            # 1. Place cube
+            # ----------------------------------------------------------
+            if cube_base is not None:
+                target_base = np.asarray(cube_base, dtype=float)
+                target_world = ik.base_to_world(target_base)
+                target_base2 = ik._base2_R.T @ (target_world - ik._base2_t)
+                arm = ik.choose_arm(target_base, target_base2)
+                active_target = target_base if arm == "left" else target_base2
+                approach_traj = ik.generate_ik_bimanual(active_target.tolist(), arm=arm)
+                if not approach_traj:
+                    print(f"  Loop {loop_count}: IK failed for fixed target, skipping.")
+                    time.sleep(1.0)
                     continue
             else:
-                sampled = _sample_random_reachable_target(ik, gripper_offset, rng=rng)
-                if sampled is None:
-                    print("WARNING: Failed to sample reachable random target; skipping this loop.")
+                result = _sample_reachable_target(ik, rng)
+                if result is None:
+                    print(f"  Loop {loop_count}: Failed to sample reachable target, retrying.")
                     continue
-                loop_cube_base, trajectory = sampled
+                target_base, target_base2, arm, approach_traj = result
 
-            trajectory = _interpolate_trajectory(trajectory, min_anim_steps=200)
-            final_q = trajectory[-1]
+            # Show cube in viewer
+            cube_world = ik.base_to_world(target_base)
+            _set_cube_pos(model, data, cube_world)
+            mujoco.mj_forward(model, data)
+            viewer.sync()
+
+            if arm == "left":
+                arm_qpos = left_qpos
+                jaw_idx = left_jaw_idx
+                ee_body = _LEFT_EE_BODY
+                active_target = target_base
+            else:
+                arm_qpos = right_qpos
+                jaw_idx = right_jaw_idx
+                ee_body = _RIGHT_EE_BODY
+                active_target = target_base2
+
+            # Show where Pinocchio thinks the EE ends up
+            final_ee = ik.ee_world_pos(approach_traj[-1], arm=arm)
             print(
-                f"  Target Base: [{loop_cube_base[0]:.3f}, {loop_cube_base[1]:.3f}, {loop_cube_base[2]:.3f}] "
-                f"| IK steps: {len(trajectory)} "
-                f"| Final joints deg: {np.rad2deg(final_q).round(1).tolist()}"
+                f"  Loop {loop_count}: cube at [{target_base[0]:.3f}, {target_base[1]:.3f}, {target_base[2]:.3f}] "
+                f"-> {arm} arm, {len(approach_traj)} IK steps"
+            )
+            print(
+                f"    EE     (world): [{final_ee[0]:.4f}, {final_ee[1]:.4f}, {final_ee[2]:.4f}]"
+            )
+            print(
+                f"    Cube   (world): [{cube_world[0]:.4f}, {cube_world[1]:.4f}, {cube_world[2]:.4f}]"
+                f"  error: {np.linalg.norm(final_ee - cube_world)*1000:.1f} mm"
             )
 
-            target_world_ik = ik.base_to_world(np.asarray(loop_cube_base) + np.asarray(gripper_offset))
-            target_world = target_world_ik + _MJCF_OFFSET
-            _update_target_cube(model, data, target_world)
+            # ----------------------------------------------------------
+            # 2. Pause to show the cube before moving
+            # ----------------------------------------------------------
+            _hold(viewer, model, data, 1.0)
+            if not viewer.is_running():
+                break
 
-            # Target ~3 seconds for full animation at speed=1
-            dt_display = max(3.0 / len(trajectory), 0.01) / speed
+            # ----------------------------------------------------------
+            # 3. Approach — move arm to cube
+            # ----------------------------------------------------------
+            approach_smooth = _interpolate(approach_traj, min_steps=200)
+            _animate_trajectory(viewer, model, data, approach_smooth, arm_qpos, speed, ik_solver=ik, arm=arm)
+            if not viewer.is_running():
+                break
 
-            # Animate through trajectory
-            for step_i, q_step in enumerate(trajectory):
-                if not viewer.is_running():
-                    break
-                for idx, q_val in zip(qpos_indices, q_step):
-                    data.qpos[idx] = q_val
-                mujoco.mj_forward(model, data)
-                viewer.sync()
-                time.sleep(dt_display)
+            # ----------------------------------------------------------
+            # 4. Close gripper
+            # ----------------------------------------------------------
+            _animate_jaw(viewer, model, data, jaw_idx, _JAW_OPEN, _JAW_CLOSED, steps=60, speed=speed)
+            if not viewer.is_running():
+                break
+            _hold(viewer, model, data, 0.5)
 
-            # Hold final pose for 8 seconds
-            hold_start = time.time()
-            while viewer.is_running() and time.time() - hold_start < 8.0:
-                _update_target_cube(model, data, target_world)
-                mujoco.mj_forward(model, data)
-                viewer.sync()
-                time.sleep(0.05)
+            # ----------------------------------------------------------
+            # 5. Lift — solve IK to a point above the cube
+            # ----------------------------------------------------------
+            lift_target = active_target.copy()
+            lift_target[2] += _LIFT_HEIGHT
 
-            # Reset to neutral before next loop
-            if viewer.is_running():
-                for idx in qpos_indices:
-                    data.qpos[idx] = 0.0
-                mujoco.mj_forward(model, data)
-                viewer.sync()
-                time.sleep(0.5)
+            # Re-init IK state from current pose
+            ik_fresh = IK_SO101()
+            lift_traj = ik_fresh.generate_ik_bimanual(lift_target.tolist(), arm=arm)
+            if lift_traj:
+                lift_smooth = _interpolate(lift_traj, min_steps=150)
+                _animate_trajectory(
+                    viewer, model, data, lift_smooth, arm_qpos, speed,
+                    ik_solver=ik_fresh, arm=arm, cube_track_body=ee_body,
+                )
+            else:
+                print("    Lift IK failed, skipping lift.")
+
+            if not viewer.is_running():
+                break
+            _hold(viewer, model, data, 1.0)
+
+            # ----------------------------------------------------------
+            # 6. Open gripper — release cube
+            # ----------------------------------------------------------
+            _animate_jaw(viewer, model, data, jaw_idx, _JAW_CLOSED, _JAW_OPEN, steps=40, speed=speed)
+            if not viewer.is_running():
+                break
+
+            # ----------------------------------------------------------
+            # 7. Hold and reset
+            # ----------------------------------------------------------
+            _hold(viewer, model, data, 2.0)
 
     print("Done.")
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="MuJoCo visualizer for xlerobot IK pipeline",
+        description="MuJoCo pick pipeline visualizer",
     )
     parser.add_argument(
-        "--cube-x", type=float, default=0.0,
-        help="Target cube X in Base frame (left/right). Default: 0.0",
+        "--cube-x", type=float, default=None,
+        help="Target cube X in Base frame. Omit for random placement.",
     )
     parser.add_argument(
-        "--cube-y", type=float, default=-0.25,
-        help="Target cube Y in Base frame (-Y is forward). Default: -0.20",
+        "--cube-y", type=float, default=None,
+        help="Target cube Y in Base frame (-Y is forward). Omit for random.",
     )
     parser.add_argument(
-        "--cube-z", type=float, default=0.0,
-        help="Target cube Z in Base frame (up/down). Default: 0.0",
-    )
-    parser.add_argument(
-        "--gripper-offset-x", type=float, default=0.0,
-        help="Gripper offset X in Base frame. Default: 0.0",
-    )
-    parser.add_argument(
-        "--gripper-offset-y", type=float, default=0.0,
-        help="Gripper offset Y in Base frame. Default: 0.0",
-    )
-    parser.add_argument(
-        "--gripper-offset-z", type=float, default=0.0,
-        help="Gripper offset Z in Base frame. Default: 0.0",
-    )
-    parser.add_argument(
-        "--use-transform", action="store_true",
-        help="Run frame_transform pipeline with synthetic camera point",
+        "--cube-z", type=float, default=None,
+        help="Target cube Z in Base frame. Omit for random.",
     )
     parser.add_argument(
         "--speed", type=float, default=1.0,
@@ -377,15 +506,14 @@ def main():
 
     args = parser.parse_args()
 
-    cube_base = [args.cube_x, args.cube_y, args.cube_z]
-    gripper_offset = [args.gripper_offset_x, args.gripper_offset_y, args.gripper_offset_z]
+    if all(v is not None for v in [args.cube_x, args.cube_y, args.cube_z]):
+        cube_base = [args.cube_x, args.cube_y, args.cube_z]
+    elif any(v is not None for v in [args.cube_x, args.cube_y, args.cube_z]):
+        parser.error("Specify all of --cube-x, --cube-y, --cube-z or none for random.")
+    else:
+        cube_base = None
 
-    run_visualization(
-        cube_base=cube_base,
-        gripper_offset=gripper_offset,
-        use_transform=args.use_transform,
-        speed=args.speed,
-    )
+    run_visualization(cube_base=cube_base, speed=args.speed)
 
 
 if __name__ == "__main__":

@@ -114,6 +114,16 @@ class IK_SO101:
         print(f"Arm selection: left dist={dist_left:.4f}, right dist={dist_right:.4f} -> {chosen}")
         return chosen
 
+    def ee_world_pos(self, q_arm: np.ndarray, arm: str = "left") -> np.ndarray:
+        """Run FK on 5 arm joint angles (rad) and return the EE position in world frame."""
+        q = pin.neutral(self.model)
+        indices = self._left_q_indices if arm == "left" else self._right_q_indices
+        q[indices] = np.asarray(q_arm, dtype=float)
+        pin.forwardKinematics(self.model, self.data, q)
+        pin.updateFramePlacements(self.model, self.data)
+        ee_name = self.EE_LEFT if arm == "left" else self.EE_RIGHT
+        return self.data.oMf[self.model.getFrameId(ee_name)].translation.copy()
+
     def _get_current_ee_world_pos(self, ee_frame_name: str) -> np.ndarray:
         pin.forwardKinematics(self.model, self.data, self.configuration.q)
         pin.updateFramePlacements(self.model, self.data)
