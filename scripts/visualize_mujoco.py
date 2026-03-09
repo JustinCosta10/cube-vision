@@ -76,8 +76,9 @@ _RIGHT_EE_BODY = "Gripper_Tip_2"
 _JAW_OPEN = -0.37
 _JAW_CLOSED = 1.2  # don't fully max out
 
-# Home pose: arms curled up, grippers horizontal [Rotation, Pitch, Elbow, Wrist_Pitch, Wrist_Roll] in radians
-_HOME_POSE_RAD = np.deg2rad([0.0, 180.0, 180.0, 0.0, 0.0])
+# Home pose: arms curled up with the gripper rotated horizontal
+# [Rotation, Pitch, Elbow, Wrist_Pitch, Wrist_Roll] in radians.
+_HOME_POSE_RAD = np.deg2rad([0.0, 180.0, 180.0, 0.0, 90.0])
 
 
 # Table surface height in MJCF world coords.
