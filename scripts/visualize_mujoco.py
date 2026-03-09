@@ -53,8 +53,20 @@ from cube_vision.transforms import camera_xyz_to_base_xyz, camera_xyz_to_base2_x
 
 _MJCF_PATH = _REPO_ROOT / "model" / "xlerobot.xml"
 
-_LEFT_JOINT_NAMES = ["Rotation_L", "Pitch_L", "Elbow_L", "Wrist_Pitch_L", "Wrist_Roll_L"]
-_RIGHT_JOINT_NAMES = ["Rotation_R", "Pitch_R", "Elbow_R", "Wrist_Pitch_R", "Wrist_Roll_R"]
+_LEFT_JOINT_NAMES = [
+    "Rotation_L",
+    "Pitch_L",
+    "Elbow_L",
+    "Wrist_Pitch_L",
+    "Wrist_Roll_L",
+]
+_RIGHT_JOINT_NAMES = [
+    "Rotation_R",
+    "Pitch_R",
+    "Elbow_R",
+    "Wrist_Pitch_R",
+    "Wrist_Roll_R",
+]
 _LEFT_JAW = "Jaw_L"
 _RIGHT_JAW = "Jaw_R"
 _LEFT_EE_BODY = "Gripper_Tip"
@@ -69,11 +81,11 @@ _HOME_POSE_RAD = np.deg2rad([0.0, 180.0, 180.0, 0.0, 0.0])
 
 
 # Table surface height in MJCF world coords.
-# Arm bases are at ~z=0.79 in MJCF. Table just below lowest reachable z.
-_TABLE_Z = 0.69
-_TABLE_HALF_SIZE = (0.25, 0.30, 0.02)  # x, y, z half-extents
-# Table center in MJCF world: in front of the robot (negative x)
-_TABLE_POS = (-0.30, 0.0, _TABLE_Z - _TABLE_HALF_SIZE[2])
+# Arm bases are at ~z=0.79 in MJCF. Table just below the base frames.
+_TABLE_Z = 0.75
+_TABLE_HALF_SIZE = (0.18, 0.40, 0.02)  # x, y, z half-extents
+# Table center in MJCF world: in front of the robot (negative x), offset to avoid cart collision
+_TABLE_POS = (-0.36, 0.0, _TABLE_Z - _TABLE_HALF_SIZE[2])
 _CUBE_HALF = 0.017  # half-size of the cube geom
 
 
@@ -94,12 +106,16 @@ def _inject_scene(root: ET.Element) -> None:
     # Ground plane
     if "ground" not in existing:
         ET.SubElement(
-            worldbody, "geom",
+            worldbody,
+            "geom",
             {
-                "name": "ground", "type": "plane",
-                "size": "2 2 0.01", "pos": "0 0 0",
+                "name": "ground",
+                "type": "plane",
+                "size": "2 2 0.01",
+                "pos": "0 0 0",
                 "rgba": "0.85 0.85 0.80 1",
-                "contype": "0", "conaffinity": "0",
+                "contype": "0",
+                "conaffinity": "0",
             },
         )
 
@@ -108,13 +124,16 @@ def _inject_scene(root: ET.Element) -> None:
         tx, ty, tz = _TABLE_POS
         sx, sy, sz = _TABLE_HALF_SIZE
         ET.SubElement(
-            worldbody, "geom",
+            worldbody,
+            "geom",
             {
-                "name": "table", "type": "box",
+                "name": "table",
+                "type": "box",
                 "size": f"{sx} {sy} {sz}",
                 "pos": f"{tx} {ty} {tz}",
                 "rgba": "0.45 0.30 0.18 1",
-                "contype": "0", "conaffinity": "0",
+                "contype": "0",
+                "conaffinity": "0",
             },
         )
 
@@ -122,43 +141,57 @@ def _inject_scene(root: ET.Element) -> None:
     if "target_cube" not in existing:
         cube_start_z = _TABLE_Z + _CUBE_HALF
         body = ET.SubElement(
-            worldbody, "body",
+            worldbody,
+            "body",
             {"name": "target_cube", "mocap": "true", "pos": f"0 0 {cube_start_z}"},
         )
         ET.SubElement(
-            body, "geom",
+            body,
+            "geom",
             {
-                "name": "target_cube_geom", "type": "box",
+                "name": "target_cube_geom",
+                "type": "box",
                 "size": f"{_CUBE_HALF} {_CUBE_HALF} {_CUBE_HALF}",
                 "rgba": "1 0.1 0.1 1",
-                "contype": "0", "conaffinity": "0", "group": "1",
+                "contype": "0",
+                "conaffinity": "0",
+                "group": "1",
             },
         )
 
     # End-effector marker — bright sphere showing Pinocchio FK position
     if "ee_marker" not in existing:
         body = ET.SubElement(
-            worldbody, "body",
+            worldbody,
+            "body",
             {"name": "ee_marker", "mocap": "true", "pos": "0 0 0"},
         )
         # Outer glow
         ET.SubElement(
-            body, "geom",
+            body,
+            "geom",
             {
-                "name": "ee_marker_glow", "type": "sphere",
+                "name": "ee_marker_glow",
+                "type": "sphere",
                 "size": "0.008",
                 "rgba": "0 1 0.2 0.3",
-                "contype": "0", "conaffinity": "0", "group": "1",
+                "contype": "0",
+                "conaffinity": "0",
+                "group": "1",
             },
         )
         # Inner core
         ET.SubElement(
-            body, "geom",
+            body,
+            "geom",
             {
-                "name": "ee_marker_geom", "type": "sphere",
+                "name": "ee_marker_geom",
+                "type": "sphere",
                 "size": "0.005",
                 "rgba": "0 1 0.3 1",
-                "contype": "0", "conaffinity": "0", "group": "1",
+                "contype": "0",
+                "conaffinity": "0",
+                "group": "1",
             },
         )
 
@@ -260,7 +293,9 @@ def _update_ee_marker(model, data, ee_body: str):
 # ---------------------------------------------------------------------------
 
 
-def _interpolate(trajectory: list[np.ndarray], min_steps: int = 200) -> list[np.ndarray]:
+def _interpolate(
+    trajectory: list[np.ndarray], min_steps: int = 200
+) -> list[np.ndarray]:
     if len(trajectory) >= min_steps or len(trajectory) < 2:
         return trajectory
     orig = np.array(trajectory)
@@ -273,8 +308,15 @@ def _interpolate(trajectory: list[np.ndarray], min_steps: int = 200) -> list[np.
 
 
 def _animate_trajectory(
-    viewer, model, data, trajectory, qpos_indices, speed,
-    ik_solver=None, arm=None, cube_track_body=None,
+    viewer,
+    model,
+    data,
+    trajectory,
+    qpos_indices,
+    speed,
+    ik_solver=None,
+    arm=None,
+    cube_track_body=None,
 ):
     """Animate joint trajectory. Tracks EE via Pinocchio FK and optionally moves cube with gripper."""
     dt = max(3.0 / len(trajectory), 0.01) / speed
@@ -322,28 +364,34 @@ def _table_z_in_base_frame(ik: IK_SO101) -> float:
 
 
 def _sample_reachable_target(
-    ik: IK_SO101, rng: np.random.Generator, max_attempts: int = 100,
+    ik: IK_SO101,
+    rng: np.random.Generator,
+    max_attempts: int = 100,
 ) -> tuple[np.ndarray, np.ndarray, str, list[np.ndarray]] | None:
     """Sample a random target on the table in world coords, choose the best arm, return (base_target, base2_target, arm, trajectory)."""
     # Sample in world frame so targets span both arms' workspaces.
     # Table center is at _TABLE_POS; arms are at world y ≈ -0.11 (left) and +0.11 (right).
-    world_x_bounds = (-0.38, -0.22)   # in front of robot (negative world X)
-    world_y_bounds = (-0.14, 0.14)    # spans both arms
-    world_z = _TABLE_Z + _CUBE_HALF   # cube on table surface
+    world_x_bounds = (-0.55, -0.25)  # in front of robot (negative world X)
+    world_y_bounds = (-0.20, 0.20)  # spans both arms
+    world_z = _TABLE_Z + _CUBE_HALF  # cube on table surface
 
     for _ in range(max_attempts):
-        target_world = np.array([
-            rng.uniform(*world_x_bounds),
-            rng.uniform(*world_y_bounds),
-            world_z,
-        ])
+        target_world = np.array(
+            [
+                rng.uniform(*world_x_bounds),
+                rng.uniform(*world_y_bounds),
+                world_z,
+            ]
+        )
         # Convert to both arm base frames
         target_base = ik._base_R.T @ (target_world - ik._base_t)
         target_base2 = ik._base2_R.T @ (target_world - ik._base2_t)
 
         arm = ik.choose_arm(target_base, target_base2)
         active_target = target_base if arm == "left" else target_base2
-        traj = ik.generate_ik_bimanual(active_target.tolist(), arm=arm, seed_q_rad=_HOME_POSE_RAD)
+        traj = ik.generate_ik_bimanual(
+            active_target.tolist(), arm=arm, seed_q_rad=_HOME_POSE_RAD
+        )
         if traj:
             return target_base, target_base2, arm, traj
     return None
@@ -384,7 +432,9 @@ def run_visualization(
             loop_count += 1
 
             # --- Reset both arms to home pose, jaws open ---
-            _set_home_pose(model, data, left_qpos, right_qpos, left_jaw_idx, right_jaw_idx)
+            _set_home_pose(
+                model, data, left_qpos, right_qpos, left_jaw_idx, right_jaw_idx
+            )
             _update_ee_marker(model, data, _LEFT_EE_BODY)
             viewer.sync()
 
@@ -397,7 +447,9 @@ def run_visualization(
                 target_base2 = ik._base2_R.T @ (target_world - ik._base2_t)
                 arm = ik.choose_arm(target_base, target_base2)
                 active_target = target_base if arm == "left" else target_base2
-                approach_traj = ik.generate_ik_bimanual(active_target.tolist(), arm=arm, seed_q_rad=_HOME_POSE_RAD)
+                approach_traj = ik.generate_ik_bimanual(
+                    active_target.tolist(), arm=arm, seed_q_rad=_HOME_POSE_RAD
+                )
                 if not approach_traj:
                     print(f"  Loop {loop_count}: IK failed for fixed target, skipping.")
                     time.sleep(1.0)
@@ -405,7 +457,9 @@ def run_visualization(
             else:
                 result = _sample_reachable_target(ik, rng)
                 if result is None:
-                    print(f"  Loop {loop_count}: Failed to sample reachable target, retrying.")
+                    print(
+                        f"  Loop {loop_count}: Failed to sample reachable target, retrying."
+                    )
                     continue
                 target_base, target_base2, arm, approach_traj = result
 
@@ -437,7 +491,7 @@ def run_visualization(
             )
             print(
                 f"    Cube   (world): [{cube_world[0]:.4f}, {cube_world[1]:.4f}, {cube_world[2]:.4f}]"
-                f"  error: {np.linalg.norm(final_ee - cube_world)*1000:.1f} mm"
+                f"  error: {np.linalg.norm(final_ee - cube_world) * 1000:.1f} mm"
             )
 
             # ----------------------------------------------------------
@@ -450,7 +504,16 @@ def run_visualization(
             current_q = np.array([data.qpos[i] for i in arm_qpos])
             approach_traj.insert(0, current_q)
             approach_smooth = _interpolate(approach_traj, min_steps=200)
-            _animate_trajectory(viewer, model, data, approach_smooth, arm_qpos, speed, ik_solver=ik, arm=arm)
+            _animate_trajectory(
+                viewer,
+                model,
+                data,
+                approach_smooth,
+                arm_qpos,
+                speed,
+                ik_solver=ik,
+                arm=arm,
+            )
             if not viewer.is_running():
                 break
             _hold(viewer, model, data, 1.0)
@@ -463,19 +526,27 @@ def main():
         description="MuJoCo pick pipeline visualizer",
     )
     parser.add_argument(
-        "--cube-x", type=float, default=None,
+        "--cube-x",
+        type=float,
+        default=None,
         help="Target cube X in Base frame. Omit for random placement.",
     )
     parser.add_argument(
-        "--cube-y", type=float, default=None,
+        "--cube-y",
+        type=float,
+        default=None,
         help="Target cube Y in Base frame (-Y is forward). Omit for random.",
     )
     parser.add_argument(
-        "--cube-z", type=float, default=None,
+        "--cube-z",
+        type=float,
+        default=None,
         help="Target cube Z in Base frame. Omit for random.",
     )
     parser.add_argument(
-        "--speed", type=float, default=1.0,
+        "--speed",
+        type=float,
+        default=1.0,
         help="Playback speed multiplier. Default: 1.0",
     )
 
